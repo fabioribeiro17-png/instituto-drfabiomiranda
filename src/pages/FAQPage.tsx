@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useCallback } from 'react'
 import { Search, Info, MessageCircle } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import {
@@ -9,67 +9,120 @@ import {
 } from '@/components/ui/accordion'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { FAQS, FAQ_CATEGORIES } from '@/data/content'
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area'
+import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
+import { useRealtime } from '@/hooks/use-realtime'
+import {
+  getFaqCategories,
+  getFaqs,
+  stripHtml,
+  type FaqCategoryRecord,
+  type FaqRecord,
+} from '@/services/faqs'
+
+const catBtnClass = (active: boolean) =>
+  cn(
+    'px-5 py-3 rounded-xl text-sm font-medium transition-all text-left border',
+    active
+      ? 'bg-primary text-primary-foreground border-primary shadow-md'
+      : 'bg-white text-muted-foreground hover:bg-muted hover:text-foreground border-transparent hover:border-border',
+  )
 
 export default function FAQPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [activeCategory, setActiveCategory] = useState<string | null>(null)
+  const [categories, setCategories] = useState<FaqCategoryRecord[]>([])
+  const [faqs, setFaqs] = useState<FaqRecord[]>([])
+  const [loading, setLoading] = useState(true)
 
-  // Filter logic
-  const filteredFaqs = useMemo(() => {
-    let filtered = FAQS
-
-    if (activeCategory) {
-      filtered = filtered.filter((f) => f.category === activeCategory)
+  const loadData = useCallback(async () => {
+    try {
+      const [cats, faqList] = await Promise.all([getFaqCategories(), getFaqs()])
+      setCategories(cats)
+      setFaqs(faqList)
+    } catch (e) {
+      console.error('Failed to load FAQ data:', e)
+    } finally {
+      setLoading(false)
     }
+  }, [])
 
+  useEffect(() => {
+    loadData()
+  }, [loadData])
+  useRealtime('faqs', () => {
+    loadData()
+  })
+  useRealtime('faq_categories', () => {
+    loadData()
+  })
+
+  const groupedFaqs = useMemo(() => {
+    let filtered = faqs
+    if (activeCategory) {
+      filtered = filtered.filter((f) => f.expand?.category?.name === activeCategory)
+    }
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase()
       filtered = filtered.filter(
-        (f) => f.question.toLowerCase().includes(q) || f.answer.toLowerCase().includes(q),
+        (f) =>
+          f.question.toLowerCase().includes(q) || stripHtml(f.answer).toLowerCase().includes(q),
       )
     }
-
-    // Group back by category for rendering if no specific category is active, or just group the filtered results
-    const grouped: Record<string, typeof FAQS> = {}
-    filtered.forEach((faq) => {
-      if (!grouped[faq.category]) grouped[faq.category] = []
-      grouped[faq.category].push(faq)
+    const grouped: Record<string, FaqRecord[]> = {}
+    filtered.forEach((f) => {
+      const name = f.expand?.category?.name || 'Outros'
+      if (!grouped[name]) grouped[name] = []
+      grouped[name].push(f)
     })
-
     return grouped
-  }, [searchQuery, activeCategory])
+  }, [searchQuery, activeCategory, faqs])
 
-  // Inject SEO Schema
   useEffect(() => {
-    const schema = {
-      '@context': 'https://schema.org',
-      '@type': 'FAQPage',
-      mainEntity: FAQS.map((faq) => ({
-        '@type': 'Question',
-        name: faq.question,
-        acceptedAnswer: {
-          '@type': 'Answer',
-          text: faq.answer,
-        },
-      })),
-    }
-
+    const all = Object.values(groupedFaqs).flat()
     const script = document.createElement('script')
     script.type = 'application/ld+json'
     script.id = 'faq-schema'
-    script.text = JSON.stringify(schema)
+    script.text = JSON.stringify({
+      '@context': 'https://schema.org',
+      '@type': 'FAQPage',
+      mainEntity: all.map((f) => ({
+        '@type': 'Question',
+        name: f.question,
+        acceptedAnswer: { '@type': 'Answer', text: stripHtml(f.answer) },
+      })),
+    })
     document.head.appendChild(script)
-
     return () => {
-      const existingScript = document.getElementById('faq-schema')
-      if (existingScript) {
-        document.head.removeChild(existingScript)
-      }
+      const el = document.getElementById('faq-schema')
+      if (el) document.head.removeChild(el)
     }
-  }, [])
+  }, [groupedFaqs])
+
+  if (loading) {
+    return (
+      <div className="bg-background min-h-screen py-12 md:py-20">
+        <div className="container px-4 max-w-6xl mx-auto">
+          <Skeleton className="h-12 w-64 mx-auto mb-4" />
+          <Skeleton className="h-6 w-96 mx-auto mb-12" />
+          <Skeleton className="h-14 max-w-2xl mx-auto mb-12 rounded-2xl" />
+          <div className="flex gap-10">
+            <div className="w-1/3 space-y-2">
+              {[...Array(5)].map((_, i) => (
+                <Skeleton key={i} className="h-12 rounded-xl" />
+              ))}
+            </div>
+            <div className="w-2/3 space-y-4">
+              {[...Array(4)].map((_, i) => (
+                <Skeleton key={i} className="h-16 rounded-xl" />
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="bg-background min-h-screen py-12 md:py-20 animate-fade-in">
@@ -84,7 +137,6 @@ export default function FAQPage() {
           </p>
         </div>
 
-        {/* Search Bar */}
         <div className="max-w-2xl mx-auto mb-12 relative animate-fade-in-up delay-100">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground h-5 w-5" />
           <Input
@@ -97,7 +149,6 @@ export default function FAQPage() {
         </div>
 
         <div className="flex flex-col lg:flex-row gap-10 animate-fade-in-up delay-200">
-          {/* Categories Sidebar - Desktop / Horizontal Scroll - Mobile */}
           <div className="lg:w-1/3 shrink-0">
             <div className="sticky top-28">
               <h3 className="font-serif font-semibold text-xl mb-4 hidden lg:block text-primary">
@@ -107,34 +158,23 @@ export default function FAQPage() {
                 <div className="flex lg:flex-col gap-2 w-max lg:w-full">
                   <button
                     onClick={() => setActiveCategory(null)}
-                    className={cn(
-                      'px-5 py-3 rounded-xl text-sm font-medium transition-all text-left border',
-                      activeCategory === null
-                        ? 'bg-primary text-primary-foreground border-primary shadow-md'
-                        : 'bg-white text-muted-foreground hover:bg-muted hover:text-foreground border-transparent hover:border-border',
-                    )}
+                    className={catBtnClass(activeCategory === null)}
                   >
                     Todas as Dúvidas
                   </button>
-                  {FAQ_CATEGORIES.map((category) => (
+                  {categories.map((cat) => (
                     <button
-                      key={category}
-                      onClick={() => setActiveCategory(category)}
-                      className={cn(
-                        'px-5 py-3 rounded-xl text-sm font-medium transition-all text-left border',
-                        activeCategory === category
-                          ? 'bg-primary text-primary-foreground border-primary shadow-md'
-                          : 'bg-white text-muted-foreground hover:bg-muted hover:text-foreground border-transparent hover:border-border',
-                      )}
+                      key={cat.id}
+                      onClick={() => setActiveCategory(cat.name)}
+                      className={catBtnClass(activeCategory === cat.name)}
                     >
-                      {category}
+                      {cat.name}
                     </button>
                   ))}
                 </div>
                 <ScrollBar orientation="horizontal" className="lg:hidden" />
               </ScrollArea>
 
-              {/* Sidebar Info Card */}
               <Card className="mt-8 bg-blue-50/50 border-blue-100 hidden lg:block">
                 <CardContent className="p-6">
                   <Info className="h-6 w-6 text-blue-500 mb-3" />
@@ -148,9 +188,12 @@ export default function FAQPage() {
             </div>
           </div>
 
-          {/* FAQ Accordions */}
           <div className="lg:w-2/3">
-            {Object.keys(filteredFaqs).length === 0 ? (
+            {faqs.length === 0 ? (
+              <div className="text-center py-12 text-muted-foreground">
+                <p>Nenhum conteúdo encontrado. Volte em breve!</p>
+              </div>
+            ) : Object.keys(groupedFaqs).length === 0 ? (
               <div className="text-center py-12 text-muted-foreground">
                 <p>Nenhuma dúvida encontrada para "{searchQuery}".</p>
                 <Button
@@ -163,7 +206,7 @@ export default function FAQPage() {
               </div>
             ) : (
               <div className="space-y-10">
-                {Object.entries(filteredFaqs).map(([category, faqs], catIndex) => (
+                {Object.entries(groupedFaqs).map(([category, faqList], catIndex) => (
                   <div
                     key={category}
                     className="animate-slide-up"
@@ -173,7 +216,7 @@ export default function FAQPage() {
                       {category}
                     </h2>
                     <Accordion type="multiple" className="w-full space-y-4">
-                      {faqs.map((faq, index) => {
+                      {faqList.map((faq, index) => {
                         const showCta = (index + 1) % 4 === 0
                         return (
                           <div key={faq.id}>
@@ -185,11 +228,10 @@ export default function FAQPage() {
                                 {faq.question}
                               </AccordionTrigger>
                               <AccordionContent className="text-muted-foreground leading-relaxed pb-6 text-base">
-                                {faq.answer}
+                                <div dangerouslySetInnerHTML={{ __html: faq.answer }} />
                               </AccordionContent>
                             </AccordionItem>
 
-                            {/* Intermittent CTA Block */}
                             {showCta && (
                               <div className="mt-4 mb-4 p-6 rounded-xl bg-gradient-to-r from-teal-50 to-emerald-50 border border-teal-100 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-sm">
                                 <div>
